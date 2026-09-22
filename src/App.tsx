@@ -1,82 +1,82 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import { useStation } from "./state/useStation";
+import { Prescription, PrescriptionDraft } from "./domain/types";
+import { selectOccupations } from "./domain/rules";
+import { PrescriptionForm } from "./ui/PrescriptionForm";
+import { PrescriptionBoard, BoardAction } from "./ui/PrescriptionBoard";
+import { WorkOrderDesk, OrderAction } from "./ui/WorkOrderDesk";
+import { RevisionDialog } from "./ui/RevisionDialog";
 
 const project = {
-  "id": "hxwl-11",
-  "port": 5111,
-  "title": "眼科验光记录",
-  "subtitle": "视力、屈光参数与复查处方对比",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#2563eb",
-    "#059669",
-    "#dc2626"
-  ],
-  "domain": "眼视光",
-  "users": [
-    "验光师",
-    "门店顾问",
-    "复查医生"
-  ],
-  "metrics": [
-    "近视进展",
-    "散光变化",
-    "复查提醒",
-    "处方数量"
-  ],
-  "filters": [
-    "儿童",
-    "成人",
-    "渐进片",
-    "角膜塑形镜"
-  ],
-  "fields": [
-    "裸眼视力",
-    "矫正视力",
-    "球镜",
-    "柱镜",
-    "轴位",
-    "瞳距",
-    "角膜曲率"
-  ],
-  "records": [
-    [
-      "Patient-032",
-      "儿童近视",
-      "复查",
-      "右眼-2.75DS，轴位180"
-    ],
-    [
-      "Patient-081",
-      "渐进片",
-      "初配",
-      "ADD +1.50，瞳高待确认"
-    ],
-    [
-      "Patient-144",
-      "散光",
-      "复查",
-      "柱镜变化0.50D"
-    ]
-  ]
+  id: "hxwl-11",
+  port: 5111,
+  title: "处方下达与镜片加工核验台",
+  subtitle: "处方按患者 / 眼别管理球镜、柱镜、轴位与瞳距；加工单引用即冻结，渐进片补加光与瞳高后方可开工，已加工处方带原因修订并保留版本链。",
+  stack: "React + Vite + TypeScript + CSS（无新增依赖）",
 };
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
-  );
-}
-
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const { state, dispatch, toast, setToast, problems, resetDemo } = useStation();
+  const [editing, setEditing] = useState<Prescription | null>(null);
+  const [revising, setRevising] = useState<Prescription | null>(null);
+  const [filterPatient, setFilterPatient] = useState("");
+
+  const occupations = useMemo(() => selectOccupations(state), [state]);
+  const metrics = useMemo(() => {
+    const pending = state.prescriptions.filter((r) => r.status === "pending").length;
+    const review = state.prescriptions.filter((r) => r.reviewRequired).length;
+    const queued = state.orders.filter((o) => o.status === "queued").length;
+    const processing = state.orders.filter((o) => o.status === "in_progress").length;
+    const done = state.orders.filter((o) => o.status === "done").length;
+    const families = new Set(state.prescriptions.map((r) => r.rootId)).size;
+    return [
+      { label: "待加工处方 / 占用槽位", value: `${pending} / ${occupations.size}` },
+      { label: "瞳距待复核", value: review },
+      { label: "排队 / 加工中", value: `${queued} / ${processing}` },
+      { label: "已完成加工单", value: done },
+      { label: "处方版本家族", value: families },
+    ];
+  }, [state, occupations.size]);
+
+  const handleIssue = (draft: PrescriptionDraft, editingId: string | null) => {
+    if (editingId) {
+      const ok = dispatch({ type: "updatePending", id: editingId, draft });
+      if (ok) setEditing(null);
+    } else {
+      dispatch({ type: "issue", draft });
+    }
+  };
+
+  const handleBoardAction = (a: BoardAction) => {
+    switch (a.kind) {
+      case "edit":
+        setEditing(a.rx);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        break;
+      case "createOrder":
+        dispatch({ type: "createOrder", prescriptionId: a.rx.id });
+        break;
+      case "resolveReview":
+        dispatch({ type: "resolveReview", id: a.rx.id });
+        break;
+      case "revise":
+        setRevising(a.rx);
+        break;
+    }
+  };
+
+  const handleOrderAction = (a: OrderAction) => {
+    if (a.kind === "supplement") {
+      dispatch({ type: "supplementOrder", orderId: a.orderId, patch: a.patch });
+      return;
+    }
+    if (a.kind === "start") {
+      dispatch({ type: "startOrder", orderId: a.orderId });
+      return;
+    }
+    dispatch({ type: "completeOrder", orderId: a.orderId, checkNote: a.checkNote });
+  };
 
   return (
     <main className="app-shell">
@@ -89,70 +89,104 @@ function App() {
         <div className="stack-card">
           <span>技术栈</span>
           <strong>{project.stack}</strong>
+          <button className="reset-btn" onClick={resetDemo}>恢复示例数据</button>
         </div>
       </section>
 
-      <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
+      {problems.length > 0 && (
+        <section className="audit-banner">
+          <strong>一致性自检发现 {problems.length} 个问题：</strong>
+          {problems.map((p, i) => (
+            <span key={i}>{p}</span>
+          ))}
+        </section>
+      )}
+
+      <section className="metrics-grid metrics-grid-5">
+        {metrics.map((m) => (
+          <article className="metric-card" key={m.label}>
+            <span>{m.label}</span>
+            <strong>{m.value}</strong>
+          </article>
         ))}
       </section>
 
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
+      <PrescriptionForm
+        state={state}
+        editing={editing}
+        onSubmit={handleIssue}
+        onCancelEdit={() => setEditing(null)}
+      />
 
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
+      <section className="workspace workspace-cols">
+        <div className="panel rules-panel">
+          <p className="eyebrow">规则</p>
+          <h2>核验规则一览</h2>
+          <ul className="rule-list">
+            <li>同一患者同一眼别，只能有一张<strong>待加工</strong>处方；下达加工单后槽位转为冻结。</li>
+            <li>有柱镜（C ≠ 0）必须填轴位，轴位限 <strong>0~180°</strong>。</li>
+            <li>瞳距超出 <strong>50~80mm</strong> 不阻断录入，但处方进入<strong>待复核</strong>，复核通过前不能下达加工单。</li>
+            <li>加工单引用处方时冻结参数快照；渐进片缺 <strong>ADD / 瞳高</strong> 只能排队，补齐后方可开工。</li>
+            <li>已加工处方不可改，只能<strong>带原因新建修订</strong>；旧处方标记为「已修订」，旧值保留在版本链。</li>
+          </ul>
+          <h3>当前占用</h3>
+          <div className="occ-list">
+            {[...occupations.entries()].length === 0 && <p className="muted">无占用</p>}
+            {[...occupations.entries()].map(([key, rx]) => (
+              <span key={key} className={`occ-chip ${rx.reviewRequired ? "occ-review" : ""}`}>
+                {key.replace("::", " / ")} → {rx.id}
+                {rx.reviewRequired && "（复核中）"}
+              </span>
             ))}
           </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
         </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
+
+        <div className="board-wrap">
+          <div className="patient-filter panel">
+            <label>
+              <span>按患者编号筛选</span>
+              <input
+                value={filterPatient}
+                onChange={(e) => setFilterPatient(e.target.value)}
+                placeholder="输入 Patient- 编号"
+              />
+            </label>
+          </div>
+          <PrescriptionBoard
+            state={state}
+            filterPatient={filterPatient}
+            onAction={handleBoardAction}
+          />
         </div>
       </section>
+
+      <WorkOrderDesk state={state} onAction={handleOrderAction} />
+
+      <footer className="foot-note">
+        数据保存在浏览器 localStorage，刷新页面后处方、占用、加工单与版本链均从同一状态重算。
+      </footer>
+
+      {toast && (
+        <div
+          className={`toast ${toast.ok ? "toast-ok" : "toast-err"}`}
+          onClick={() => setToast(null)}
+        >
+          {toast.ok ? "✓ " : "✕ "}
+          {toast.message || (toast.ok ? "操作成功" : "操作被规则阻断")}
+        </div>
+      )}
+
+      {revising && (
+        <RevisionDialog
+          state={state}
+          source={revising}
+          onClose={() => setRevising(null)}
+          onConfirm={(sourceId, draft) => {
+            const ok = dispatch({ type: "revise", sourceId, draft });
+            if (ok) setRevising(null);
+          }}
+        />
+      )}
     </main>
   );
 }
