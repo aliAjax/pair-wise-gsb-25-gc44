@@ -1,157 +1,185 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import { store, useAppState } from "./ui/useAppState";
+import { checkConsistency } from "./domain/rules";
+import type { Prescription } from "./domain/types";
+import { emptyForm, PrescriptionForm, type FormValues } from "./ui/PrescriptionForm";
+import { PrescriptionList } from "./ui/PrescriptionList";
+import { JobBoard } from "./ui/JobBoard";
+import { RevisionDialog } from "./ui/RevisionDialog";
+import { AmendDialog } from "./ui/AmendDialog";
 
-const project = {
-  "id": "hxwl-11",
-  "port": 5111,
-  "title": "眼科验光记录",
-  "subtitle": "视力、屈光参数与复查处方对比",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#2563eb",
-    "#059669",
-    "#dc2626"
-  ],
-  "domain": "眼视光",
-  "users": [
-    "验光师",
-    "门店顾问",
-    "复查医生"
-  ],
-  "metrics": [
-    "近视进展",
-    "散光变化",
-    "复查提醒",
-    "处方数量"
-  ],
-  "filters": [
-    "儿童",
-    "成人",
-    "渐进片",
-    "角膜塑形镜"
-  ],
-  "fields": [
-    "裸眼视力",
-    "矫正视力",
-    "球镜",
-    "柱镜",
-    "轴位",
-    "瞳距",
-    "角膜曲率"
-  ],
-  "records": [
-    [
-      "Patient-032",
-      "儿童近视",
-      "复查",
-      "右眼-2.75DS，轴位180"
-    ],
-    [
-      "Patient-081",
-      "渐进片",
-      "初配",
-      "ADD +1.50，瞳高待确认"
-    ],
-    [
-      "Patient-144",
-      "散光",
-      "复查",
-      "柱镜变化0.50D"
-    ]
-  ]
-};
+type Tab = "rx" | "jobs";
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
+function Toast({ text, kind }: { text: string; kind: "ok" | "err" }) {
+  return <div className={`toast ${kind}`}>{text}</div>;
+}
 
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
+function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <article className="metric-card">
       <span>{label}</span>
       <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
+      <i className={tone} />
     </article>
   );
 }
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const state = useAppState();
+  const [tab, setTab] = useState<Tab>("rx");
+  const [form, setForm] = useState<FormValues>(emptyForm());
+  const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
+  const [revising, setRevising] = useState<Prescription | null>(null);
+  const [amending, setAmending] = useState<Prescription | null>(null);
+
+  const notify = (text: string, kind: "ok" | "err" = "ok") => {
+    setToast({ text, kind });
+    window.setTimeout(() => setToast(null), 3200);
+  };
+
+  const metrics = useMemo(() => {
+    return {
+      pending: state.prescriptions.filter((p) => p.status === "pending").length,
+      review: state.prescriptions.filter((p) => p.status === "review").length,
+      processing: state.prescriptions.filter((p) => p.status === "processing").length,
+      processed: state.prescriptions.filter((p) => p.status === "processed").length,
+    };
+  }, [state]);
+
+  const consistency = useMemo(() => checkConsistency(state), [state]);
 
   return (
     <main className="app-shell">
+      {toast && <Toast text={toast.text} kind={toast.kind} />}
+      {revising && (
+        <RevisionDialog
+          source={revising}
+          onClose={() => setRevising(null)}
+          onSubmit={(draft, reason) => {
+            const result = store.revise(revising.id, draft, reason);
+            notify(result.message ?? (result.ok ? "修订完成" : "修订失败"), result.ok ? "ok" : "err");
+            if (result.ok) setRevising(null);
+            return result;
+          }}
+        />
+      )}
+      {amending && (
+        <AmendDialog
+          source={amending}
+          onClose={() => setAmending(null)}
+          onSubmit={(id, draft) => {
+            const result = store.amendPending(id, draft);
+            notify(result.message ?? (result.ok ? "保存成功" : "保存失败"), result.ok ? "ok" : "err");
+            if (result.ok) setAmending(null);
+            return result;
+          }}
+        />
+      )}
+
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <p className="eyebrow">hxwl-11 · 端口 5111</p>
+          <h1>处方下达与镜片加工核验台</h1>
+          <p className="subtitle">
+            按患者与眼别管理球镜 / 柱镜 / 轴位 / 瞳距；有柱镜必填轴位（0~180°），
+            瞳距超出 50~80mm 自动待复核，同患者同眼别仅一张待加工处方，
+            加工单引用即冻结参数；渐进片须补齐加光与瞳高，已加工处方带原因修订并保留全部旧值。
+          </p>
         </div>
         <div className="stack-card">
           <span>技术栈</span>
-          <strong>{project.stack}</strong>
+          <strong>React + Vite + TypeScript + CSS（无新增依赖）</strong>
+          <span>数据 / 规则 / 页面分层：src/domain 与 src/ui</span>
+          <button
+            onClick={() => {
+              store.resetDemo();
+              setForm(emptyForm());
+              notify("已恢复内置示例数据");
+            }}
+          >
+            重置示例数据
+          </button>
         </div>
       </section>
 
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
+        <Metric label="待加工处方" value={metrics.pending} tone="status-ok" />
+        <Metric label="待复核（瞳距异常）" value={metrics.review} tone="status-watch" />
+        <Metric label="加工中（已冻结）" value={metrics.processing} tone="status-danger" />
+        <Metric label="已加工（可修订）" value={metrics.processed} tone="status-ok" />
+      </section>
+
+      <section className={`consistency-bar ${consistency.length === 0 ? "ok" : "bad"}`}>
+        {consistency.length === 0 ? (
+          <span>✓ 刷新核验通过：处方、同眼别占用、加工单冻结快照、版本链完全一致（数据持久化于本地浏览器）</span>
+        ) : (
+          <details>
+            <summary>⚠ 发现 {consistency.length} 项一致性问题（点击展开）</summary>
+            <ul>
+              {consistency.map((problem, i) => (
+                <li key={i}>{problem}</li>
+              ))}
+            </ul>
+          </details>
+        )}
       </section>
 
       <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
+        <aside className="panel narrow issue-panel">
+          <h2>下达处方</h2>
+          <PrescriptionForm
+            values={form}
+            onChange={setForm}
+            submitLabel="下达处方"
+            onSubmit={(draft) => {
+              const result = store.issue(draft);
+              notify(result.message ?? (result.ok ? "下达成功" : "下达失败"), result.ok ? "ok" : "err");
+              if (result.ok) setForm(emptyForm());
+            }}
+          />
         </aside>
 
         <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
+          <div className="tab-bar">
+            <button
+              className={tab === "rx" ? "active" : ""}
+              onClick={() => setTab("rx")}
+            >
+              处方与版本链（{state.prescriptions.length}）
+            </button>
+            <button
+              className={tab === "jobs" ? "active" : ""}
+              onClick={() => setTab("jobs")}
+            >
+              加工单核验（{state.jobs.length}）
+            </button>
           </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
 
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
+          {tab === "rx" ? (
+            <PrescriptionList
+              state={state}
+              onApprove={(id) => {
+                const r = store.approveReview(id);
+                notify(r.message ?? "", r.ok ? "ok" : "err");
+              }}
+              onStart={(id) => {
+                const r = store.startJob(id);
+                notify(r.message ?? "", r.ok ? "ok" : "err");
+              }}
+              onAmend={(rx) => setAmending(rx)}
+              onRevise={(rx) => setRevising(rx)}
+            />
+          ) : (
+            <JobBoard
+              state={state}
+              onComplete={(jobId) => {
+                const r = store.completeJob(jobId);
+                notify(r.message ?? "", r.ok ? "ok" : "err");
+              }}
+            />
+          )}
+        </section>
       </section>
     </main>
   );
